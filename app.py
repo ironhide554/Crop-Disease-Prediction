@@ -1,13 +1,17 @@
 """
 app.py - Streamlit Web Application for Crop Disease & Pest Prediction.
-Features dual-engine inference:
-1. MobileNetV3 (TFLite) - Ultra-fast edge model (~12 MB, ~95% accuracy)
-2. ResNet-50 (Keras)    - Full deep residual network (~98 MB)
+Features:
+1. Dual-Engine Inference: MobileNetV3 (TFLite Edge) & ResNet-50 (Keras)
+2. Live Mobile/Webcam Camera Input (st.camera_input)
+3. Drag-and-drop Image Upload & Benchmark Sample Gallery
+4. Agronomic Prescription Engine (Symptoms, Organic, Chemical & Cultural)
+5. Downloadable Agronomist Field Report (Branded PDF Export)
 """
 
 import os
 import time
 import glob
+import datetime
 from PIL import Image
 import numpy as np
 import streamlit as st
@@ -30,7 +34,7 @@ st.markdown("""
         margin-bottom: 0.2rem;
     }
     .sub-title {
-        font-size: 1.05rem;
+        font-size: 1.02rem;
         color: #4a5568;
         margin-bottom: 1.5rem;
     }
@@ -72,12 +76,21 @@ st.markdown("""
         border-radius: 4px;
         margin-top: 8px;
     }
+    .download-card {
+        background: linear-gradient(135deg, #f0fdf4 0%, #e2e8f0 100%);
+        border: 1px solid #cbd5e1;
+        border-radius: 8px;
+        padding: 14px 18px;
+        margin-top: 15px;
+        margin-bottom: 10px;
+    }
 </style>
 """, unsafe_allow_html=True)
 
-from src.model import load_trained_model, build_crop_disease_model, TFLiteModelWrapper
+from src.model import load_trained_model, build_crop_disease_model
 from src.disease_data import CLASS_MAPPING, DISEASE_DETAILS, get_disease_info
 from src.utils import predict_top_k
+from src.report_generator import generate_pdf_report
 
 
 @st.cache_resource
@@ -99,7 +112,7 @@ def get_cached_model(model_path: str):
 
 def main():
     st.markdown('<div class="main-title">🌱 AgriVision AI — Crop Disease & Pest Prediction</div>', unsafe_allow_html=True)
-    st.markdown('<div class="sub-title">Intelligent agricultural diagnostic system powered by Deep Learning. Detects 38 crop disease conditions across 14 plant species.</div>', unsafe_allow_html=True)
+    st.markdown('<div class="sub-title">Intelligent agricultural diagnostic system powered by Deep Learning. Detects 38 crop disease conditions across 14 plant species with instant agronomic prescriptions.</div>', unsafe_allow_html=True)
 
     # Sidebar settings
     with st.sidebar:
@@ -107,7 +120,7 @@ def main():
 
         available_models = {}
         if os.path.exists("MobileNetV3.tflite"):
-            available_models["⚡ MobileNetV3 TFLite (Fast Edge Model, ~12 MB) [Recommended]"] = "MobileNetV3.tflite"
+            available_models["⚡ MobileNetV3 TFLite (Fast Edge Model, ~12 MB) [Default]"] = "MobileNetV3.tflite"
         
         resnet_path = os.path.join("models", "crop_disease_resnet50.h5")
         if os.path.exists(resnet_path):
@@ -128,7 +141,7 @@ def main():
         st.markdown("---")
         st.markdown("### 📊 Active Model Specifications")
         if "MobileNet" in selected_model_name:
-            st.success("**Architecture:** MobileNetV3-Large\n\n**Format:** TensorFlow Lite (.tflite)\n\n**Footprint:** ~12 MB\n\n**Edge Ready:** Optimized for Raspberry Pi / Webcams")
+            st.success("**Architecture:** MobileNetV3-Large\n\n**Format:** TensorFlow Lite (.tflite)\n\n**Footprint:** ~12 MB\n\n**Accuracy:** ~95%\n\n**Edge Ready:** Optimized for Raspberry Pi / Webcams")
         else:
             st.info("**Architecture:** ResNet-50\n\n**Format:** Keras HDF5 (.h5)\n\n**Footprint:** ~98 MB\n\n**Depth:** 50 Residual Layers")
 
@@ -143,11 +156,24 @@ def main():
     else:
         st.warning(f"ℹ️ {status_msg}")
 
-    # Tabs for image selection
-    tab_upload, tab_sample, tab_database = st.tabs(["📤 Upload Leaf Image", "🖼️ Try Benchmark Samples", "📖 38-Class Reference Database"])
+    # Tabs for image input
+    tab_camera, tab_upload, tab_sample, tab_database = st.tabs([
+        "📸 Live Camera Capture",
+        "📤 Upload Leaf Image",
+        "🖼️ Try Benchmark Samples",
+        "📖 38-Class Reference Database"
+    ])
 
     selected_image = None
     image_source_label = ""
+
+    with tab_camera:
+        st.markdown("##### 📷 Take a live photo of a crop leaf:")
+        st.caption("Point your phone or webcam at the affected leaf with good lighting.")
+        camera_photo = st.camera_input("Capture Leaf Photo")
+        if camera_photo is not None:
+            selected_image = Image.open(camera_photo)
+            image_source_label = "Live Camera Photo"
 
     with tab_upload:
         uploaded_file = st.file_uploader(
@@ -201,7 +227,7 @@ def main():
         col1, col2 = st.columns([1, 1.4], gap="large")
 
         with col1:
-            st.image(selected_image, caption="Inspected Leaf Specimen", use_column_width=True)
+            st.image(selected_image, caption=f"Specimen: {image_source_label}", use_column_width=True)
 
         with col2:
             start_t = time.perf_counter()
@@ -250,6 +276,40 @@ def main():
 
             st.markdown("#### 🧪 Chemical Control Options")
             st.markdown(f'<div class="chemical-box">{info["chemical_treatment"]}</div>', unsafe_allow_html=True)
+
+        # PDF Field Report Download Section
+        st.markdown("---")
+        st.markdown("### 📄 Export Agronomist Field Report")
+        
+        pdf_col1, pdf_col2 = st.columns([2, 1])
+        with pdf_col1:
+            st.markdown("""
+            Generate a standardized, printable **Agronomic Field Diagnostic Report (PDF)** 
+            complete with the leaf photograph, primary diagnosis, confidence metrics, differential table, 
+            and complete treatment prescriptions for farm records or extension consults.
+            """)
+        
+        with pdf_col2:
+            with st.spinner("Compiling PDF report..."):
+                engine_name = "MobileNetV3 (TFLite Edge)" if "MobileNet" in selected_model_name else "ResNet-50 (Keras)"
+                pdf_bytes = generate_pdf_report(
+                    predictions=predictions,
+                    leaf_image=selected_image,
+                    model_name=engine_name,
+                    latency_ms=latency_ms,
+                    specimen_name=image_source_label
+                )
+
+            timestamp_str = datetime.datetime.now().strftime("%Y%m%d_%H%M")
+            filename = f"AgriVision_Report_{info['crop']}_{timestamp_str}.pdf"
+
+            st.download_button(
+                label="📥 Download Field Report (PDF)",
+                data=pdf_bytes,
+                file_name=filename,
+                mime="application/pdf",
+                help="Click to download the official diagnostic summary in PDF format."
+            )
 
 
 if __name__ == "__main__":

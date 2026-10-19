@@ -42,7 +42,8 @@ The system analyzes crop leaf images, identifies **38 distinct crop disease & he
   - Organic & biological controls (Neem oil, Bacillus biocontrols, copper fungicides).
   - Chemical controls & active ingredients.
   - Long-term prevention strategies (crop rotation, irrigation management).
-- **Interactive Streamlit Web Dashboard**: Drag-and-drop leaf photo diagnostics, top-5 probability breakdown charts, and built-in benchmark samples.
+- **Interactive Streamlit Web Dashboard**: Live mobile/webcam camera capture, drag-and-drop leaf photo diagnostics, top-5 probability breakdown charts, and built-in benchmark samples.
+- **Exportable PDF Field Reports**: One-click generation of branded, printable Agronomic Field Diagnostic Reports containing leaf photos, primary diagnoses, confidence metrics, and complete treatment prescriptions.
 - **Production CLI Pipeline**: Modular Python scripts for training (`train.py`), evaluation (`evaluate.py`), and inference (`predict.py`).
 
 ---
@@ -51,19 +52,20 @@ The system analyzes crop leaf images, identifies **38 distinct crop disease & he
 
 ```text
 Crop-Disease-Prediction/
-├── app.py                      # Interactive Streamlit Web Application
+├── app.py                      # Interactive Streamlit Web Application (Camera + PDF Export)
 ├── predict.py                  # Standalone CLI prediction script
 ├── train.py                    # Standalone CLI model training pipeline
 ├── evaluate.py                 # Standalone CLI evaluation & metrics script
 ├── generate_samples.py         # Benchmark test image generator
-├── requirements.txt            # Python dependencies
+├── requirements.txt            # Python dependencies (TensorFlow, Streamlit, ReportLab)
 ├── README.md                   # Project documentation
 ├── LICENSE                     # MIT License
 │
 ├── src/                        # Core Python package
 │   ├── __init__.py             # Package init & runtime compatibility polyfills
-│   ├── model.py                # ResNet-50 architectures for crop disease & pests
+│   ├── model.py                # ResNet-50 & MobileNetV3 TFLite architectures
 │   ├── disease_data.py         # 38-class metadata, symptoms, and remedies
+│   ├── report_generator.py     # PDF Agronomic Field Report generator (ReportLab)
 │   └── utils.py                # Preprocessing, top-k scoring & report formatting
 │
 ├── samples/                    # Sample test images for instant verification

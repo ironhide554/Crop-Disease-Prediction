@@ -125,3 +125,57 @@ def test_predict_report_endpoint():
             assert response.content.startswith(b"%PDF")
             assert len(response.content) > 10000
     asyncio.run(_run())
+
+
+def test_predict_heatmap_endpoint():
+    async def _run():
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            with open("samples/real_leaf_sample.jpg", "rb") as f:
+                files = {"file": ("real_leaf_sample.jpg", f.read(), "image/jpeg")}
+                response = await client.post("/predict/heatmap?colormap=jet&alpha=0.5", files=files)
+
+            assert response.status_code == 200
+            assert response.headers["content-type"] == "image/jpeg"
+            assert len(response.content) > 5000
+            # Verify valid JPEG magic header
+            assert response.content.startswith(b"\xff\xd8")
+    asyncio.run(_run())
+
+
+def test_predict_with_include_gradcam():
+    async def _run():
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            with open("samples/real_leaf_sample.jpg", "rb") as f:
+                files = {"file": ("real_leaf_sample.jpg", f.read(), "image/jpeg")}
+                response = await client.post("/predict?top_k=3&include_gradcam=true", files=files)
+
+            assert response.status_code == 200
+            data = response.json()
+            assert data["success"] is True
+            assert "gradcam_overlay_base64" in data
+            assert data["gradcam_overlay_base64"] is not None
+            assert len(data["gradcam_overlay_base64"]) > 1000
+            assert "focal_attention_point" in data
+            assert data["focal_attention_point"] is not None
+            assert "x" in data["focal_attention_point"]
+            assert "y" in data["focal_attention_point"]
+    asyncio.run(_run())
+
+
+def test_predict_report_with_gradcam():
+    async def _run():
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            with open("samples/real_leaf_sample.jpg", "rb") as f:
+                files = {"file": ("real_leaf_sample.jpg", f.read(), "image/jpeg")}
+                response = await client.post("/predict/report?include_gradcam=true", files=files)
+
+            assert response.status_code == 200
+            assert response.headers["content-type"] == "application/pdf"
+            assert response.content.startswith(b"%PDF")
+            # PDF with Grad-CAM should be larger than plain PDF
+            assert len(response.content) > 15000
+    asyncio.run(_run())
+

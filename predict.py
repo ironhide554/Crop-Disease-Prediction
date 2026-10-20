@@ -1,11 +1,11 @@
 """
 predict.py - Command-line interface for Crop Disease Prediction.
-Supports both MobileNetV3 (.tflite) and ResNet-50 (.h5 / .keras).
+Supports both MobileNetV3 (.tflite) and ResNet-50 (.h5 / .keras) with Explainable AI (Grad-CAM).
 
 Usage:
     python predict.py --image_path path/to/leaf.jpg
+    python predict.py --image_path path/to/leaf.jpg --gradcam --save_heatmap heatmap.jpg
     python predict.py --image_path path/to/leaf.jpg --model_path MobileNetV3.tflite
-    python predict.py --image_path path/to/leaf.jpg --model_path models/crop_disease_resnet50.h5
 """
 
 import os
@@ -28,6 +28,7 @@ warnings.filterwarnings('ignore')
 
 from src.model import load_trained_model, build_crop_disease_model, TFLiteModelWrapper
 from src.utils import predict_top_k, format_cli_report
+from src.explainability import explain_prediction
 
 
 def find_default_model() -> str:
@@ -71,6 +72,17 @@ def parse_args():
         action="store_true",
         help="Output prediction results in JSON format."
     )
+    parser.add_argument(
+        "--gradcam",
+        action="store_true",
+        help="Compute Explainable AI (Grad-CAM) visual attention heatmap."
+    )
+    parser.add_argument(
+        "--save_heatmap",
+        type=str,
+        default=None,
+        help="Path to save the superimposed Grad-CAM heatmap overlay image (e.g. heatmap.jpg)."
+    )
     return parser.parse_args()
 
 
@@ -78,7 +90,7 @@ def main():
     args = parse_args()
 
     if not os.path.exists(args.image_path):
-        print(f"❌ Error: Image file not found: {args.image_path}", file=sys.stderr)
+        print(f"Error: Image file not found: {args.image_path}", file=sys.stderr)
         sys.exit(1)
 
     model_path = args.model_path if args.model_path else find_default_model()
@@ -89,22 +101,44 @@ def main():
         else:
             model_label = f"ResNet-50 Keras Model [{os.path.basename(model_path)}]"
         
-        print(f"⚡ Loading model: {model_label}...")
+        print(f"Loading model: {model_label}...")
         model = load_trained_model(model_path)
     else:
         model_label = "Base ResNet-50 (ImageNet Initialized)"
-        print(f"⚠️ Warning: Model file '{model_path}' not found.")
-        print("💡 Initializing base ResNet-50 architecture with ImageNet weights for test inference...")
+        print(f"Warning: Model file '{model_path}' not found.")
+        print("Initializing base ResNet-50 architecture with ImageNet weights for test inference...")
         model = build_crop_disease_model(num_classes=38)
 
     # Perform prediction
     predictions = predict_top_k(model, args.image_path, top_k=args.top_k)
 
+    cam_result = None
+    if args.gradcam or args.save_heatmap:
+        print("Computing Grad-CAM visual attention heatmap...")
+        cam_result = explain_prediction(
+            args.image_path,
+            class_index=predictions[0]["class_index"]
+        )
+        if args.save_heatmap:
+            save_path = args.save_heatmap
+            cam_result["superimposed_image"].save(save_path)
+            print(f"Superimposed Grad-CAM heatmap successfully saved to: {save_path}")
+
     if args.json:
-        print(json.dumps(predictions, indent=2))
+        out = {
+            "predictions": predictions,
+            "gradcam": {
+                "focal_center": cam_result["focal_center"],
+                "peak_activation": cam_result["peak_activation"]
+            } if cam_result else None
+        }
+        print(json.dumps(out, indent=2))
     else:
         report = format_cli_report(predictions, model_label=model_label)
         print(report)
+        if cam_result:
+            print(f"Grad-CAM Focal Attention Coordinates: (x={cam_result['focal_center'][0]}, y={cam_result['focal_center'][1]})")
+            print(f"Peak Normalized Activation Intensity: {cam_result['peak_activation']:.2f}")
 
 
 if __name__ == "__main__":

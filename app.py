@@ -4,8 +4,9 @@ Features:
 1. Dual-Engine Inference: MobileNetV3 (TFLite Edge) & ResNet-50 (Keras)
 2. Live Mobile/Webcam Camera Input (st.camera_input)
 3. Drag-and-drop Image Upload & Benchmark Sample Gallery
-4. Agronomic Prescription Engine (Symptoms, Organic, Chemical & Cultural)
-5. Downloadable Agronomist Field Report (Branded PDF Export)
+4. Explainable AI (XAI): Interactive Grad-CAM Attention Heatmaps & Superimposed Overlays
+5. Agronomic Prescription Engine (Symptoms, Organic, Chemical & Cultural)
+6. Downloadable Agronomist Field Report (Branded PDF Export with optional Grad-CAM)
 """
 
 import os
@@ -76,13 +77,13 @@ st.markdown("""
         border-radius: 4px;
         margin-top: 8px;
     }
-    .download-card {
-        background: linear-gradient(135deg, #f0fdf4 0%, #e2e8f0 100%);
-        border: 1px solid #cbd5e1;
+    .gradcam-card {
+        background: linear-gradient(135deg, #fef2f2 0%, #f8fafc 100%);
+        border: 1px solid #fecaca;
         border-radius: 8px;
         padding: 14px 18px;
-        margin-top: 15px;
-        margin-bottom: 10px;
+        margin-top: 10px;
+        margin-bottom: 12px;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -91,6 +92,7 @@ from src.model import load_trained_model, build_crop_disease_model
 from src.disease_data import CLASS_MAPPING, DISEASE_DETAILS, get_disease_info
 from src.utils import predict_top_k
 from src.report_generator import generate_pdf_report
+from src.explainability import explain_prediction
 
 
 @st.cache_resource
@@ -112,7 +114,7 @@ def get_cached_model(model_path: str):
 
 def main():
     st.markdown('<div class="main-title">🌱 AgriVision AI — Crop Disease & Pest Prediction</div>', unsafe_allow_html=True)
-    st.markdown('<div class="sub-title">Intelligent agricultural diagnostic system powered by Deep Learning. Detects 38 crop disease conditions across 14 plant species with instant agronomic prescriptions.</div>', unsafe_allow_html=True)
+    st.markdown('<div class="sub-title">Intelligent agricultural diagnostic system powered by Deep Learning. Detects 38 crop disease conditions across 14 plant species with instant agronomic prescriptions and Explainable AI (Grad-CAM).</div>', unsafe_allow_html=True)
 
     # Sidebar settings
     with st.sidebar:
@@ -137,6 +139,11 @@ def main():
         selected_model_path = available_models[selected_model_name]
 
         top_k = st.slider("Top Candidates to Display", min_value=1, max_value=8, value=5)
+
+        st.markdown("---")
+        st.markdown("### 🔥 Explainable AI (Grad-CAM)")
+        enable_gradcam = st.checkbox("Generate Visual Attention Heatmap", value=True, help="Highlights the exact lesions, pustules, and fungal patterns on the leaf that drove the prediction.")
+        gradcam_alpha = st.slider("Heatmap Blending Opacity (α)", min_value=0.2, max_value=0.8, value=0.45, step=0.05)
 
         st.markdown("---")
         st.markdown("### 📊 Active Model Specifications")
@@ -256,6 +263,33 @@ def main():
                 st.write(label)
                 st.progress(float(item['confidence']))
 
+        # Explainable AI (Grad-CAM) Visual Heatmaps
+        gradcam_result = None
+        if enable_gradcam:
+            st.markdown("---")
+            st.subheader("🔥 Explainable AI: Grad-CAM Visual Attention Heatmap")
+            st.markdown("""
+            Grad-CAM identifies the exact spatial locations and morphological patterns on the leaf that the deep neural network focused on to establish its diagnosis.
+            Warm colors (**red/yellow**) represent high-attention disease hotspots, while cool colors (**blue**) denote background or unaffected leaf tissue.
+            """)
+
+            with st.spinner("Computing gradient-weighted class activation maps..."):
+                gradcam_result = explain_prediction(
+                    image_input=selected_image,
+                    class_index=primary["class_index"],
+                    alpha=gradcam_alpha
+                )
+
+            g_col1, g_col2, g_col3 = st.columns(3)
+            with g_col1:
+                st.image(selected_image, caption="1. Original Crop Leaf", use_column_width=True)
+            with g_col2:
+                st.image(gradcam_result["heatmap_colored"], caption="2. Grad-CAM Activation Energy (JET)", use_column_width=True)
+            with g_col3:
+                st.image(gradcam_result["superimposed_image"], caption="3. Superimposed Disease Hotspots", use_column_width=True)
+
+            st.caption(f"📍 Peak Pathological Attention Coordinate: `(x={gradcam_result['focal_center'][0]}, y={gradcam_result['focal_center'][1]})` | Peak Relative Activation: `{gradcam_result['peak_activation']:.2f}`")
+
         # Detailed Agronomic Prescription
         st.markdown("### 📋 Agronomic Diagnosis & Treatment Prescription")
         info = primary["details"]
@@ -292,9 +326,11 @@ def main():
         with pdf_col2:
             with st.spinner("Compiling PDF report..."):
                 engine_name = "MobileNetV3 (TFLite Edge)" if "MobileNet" in selected_model_name else "ResNet-50 (Keras)"
+                # If Grad-CAM was computed, pass superimposed image to report
+                report_img = gradcam_result["superimposed_image"] if gradcam_result is not None else selected_image
                 pdf_bytes = generate_pdf_report(
                     predictions=predictions,
-                    leaf_image=selected_image,
+                    leaf_image=report_img,
                     model_name=engine_name,
                     latency_ms=latency_ms,
                     specimen_name=image_source_label

@@ -10,6 +10,7 @@ from PIL import Image
 from src.model import load_trained_model, build_crop_disease_model, TFLiteModelWrapper
 from src.disease_data import CLASS_MAPPING, get_disease_info
 from src.utils import load_and_preprocess_image, predict_top_k
+from src.explainability import explain_prediction, compute_gradcam_heatmap, overlay_gradcam
 
 
 def test_disease_data_ontology():
@@ -59,3 +60,41 @@ def test_predict_top_k_probability_distribution():
         assert 0.0 <= top["confidence_percentage"] <= 100.0
         assert "details" in top
         assert "crop" in top["details"]
+
+
+def test_gradcam_inference_and_overlay():
+    """Verify Grad-CAM produces valid spatial heatmaps and blended PIL overlays."""
+    sample_path = "samples/real_leaf_sample.jpg"
+    if os.path.exists("models/crop_disease_resnet50.h5") and os.path.exists(sample_path):
+        explanation = explain_prediction(
+            sample_path,
+            model_path="models/crop_disease_resnet50.h5",
+            target_class_idx=None,
+            alpha=0.5,
+            colormap="jet"
+        )
+        assert explanation is not None
+        assert "heatmap_raw" in explanation
+        assert "superimposed_image" in explanation
+        assert "focal_point" in explanation
+        assert "peak_intensity" in explanation
+        assert 0 <= explanation["target_class_idx"] < 38
+        assert explanation["heatmap_raw"].shape == (7, 7)
+        assert isinstance(explanation["superimposed_image"], Image.Image)
+        
+        orig_img = Image.open(sample_path).convert("RGB")
+        assert explanation["superimposed_image"].size == orig_img.size
+        assert "x" in explanation["focal_point"] and "y" in explanation["focal_point"]
+        assert 0 <= explanation["focal_point"]["x"] <= orig_img.size[0]
+        assert 0 <= explanation["focal_point"]["y"] <= orig_img.size[1]
+
+        # Also test explicit class index targeting
+        exp_targeted = explain_prediction(
+            sample_path,
+            model_path="models/crop_disease_resnet50.h5",
+            target_class_idx=34,
+            alpha=0.4
+        )
+        assert exp_targeted["target_class_idx"] == 34
+        assert exp_targeted["heatmap_raw"].shape == (7, 7)
+

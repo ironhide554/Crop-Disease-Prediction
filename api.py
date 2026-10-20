@@ -8,6 +8,7 @@ Features:
 - Full CORS support for cross-origin frontend requests
 - OpenAPI / Swagger documentation at /docs and ReDoc at /redoc
 - PDF report generation endpoint (/predict/report)
+- Explainable AI Grad-CAM endpoint (/predict/heatmap)
 """
 
 import os
@@ -22,9 +23,10 @@ if sys.platform == "win32":
 
 import io
 import time
+import base64
 import datetime
 from contextlib import asynccontextmanager
-from typing import List, Optional
+from typing import List, Optional, Tuple, Dict, Any
 from PIL import Image
 
 from fastapi import FastAPI, File, UploadFile, Query, HTTPException, status
@@ -36,6 +38,7 @@ from src.model import load_trained_model, build_crop_disease_model
 from src.disease_data import CLASS_MAPPING, DISEASE_DETAILS, get_disease_info
 from src.utils import predict_top_k
 from src.report_generator import generate_pdf_report
+from src.explainability import explain_prediction
 
 
 # ==========================================
@@ -61,6 +64,13 @@ class PredictionItemSchema(BaseModel):
     details: DiseaseDetailsSchema
 
 
+class GradCAMMetaSchema(BaseModel):
+    focal_center: Tuple[int, int]
+    peak_activation: float
+    overlay_base64: Optional[str] = None
+    focal_attention_point: Optional[Dict[str, int]] = None
+
+
 class PredictionResponseSchema(BaseModel):
     success: bool = True
     specimen_name: str
@@ -69,6 +79,9 @@ class PredictionResponseSchema(BaseModel):
     timestamp: str
     primary_diagnosis: PredictionItemSchema
     top_candidates: List[PredictionItemSchema]
+    explainability: Optional[GradCAMMetaSchema] = None
+    gradcam_overlay_base64: Optional[str] = None
+    focal_attention_point: Optional[Dict[str, int]] = None
 
 
 class HealthResponseSchema(BaseModel):
@@ -143,7 +156,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="🌱 AgriVision AI — Crop Disease & Pest Prediction REST API",
-    description="High-performance deep learning REST API for automated crop leaf disease diagnosis and agronomic management.",
+    description="High-performance deep learning REST API for automated crop leaf disease diagnosis, Explainable AI (Grad-CAM), and agronomic management.",
     version="1.0.0",
     docs_url="/docs",
     redoc_url="/redoc",
@@ -225,17 +238,18 @@ def list_crops():
 @app.post("/predict", response_model=PredictionResponseSchema, tags=["Inference"])
 async def predict_crop_disease(
     file: UploadFile = File(..., description="Crop leaf image file (JPG, PNG, WebP)"),
-    top_k: int = Query(5, ge=1, le=38, description="Number of top candidates to return")
+    top_k: int = Query(5, ge=1, le=38, description="Number of top candidates to return"),
+    include_gradcam: bool = Query(False, description="Whether to compute and return Grad-CAM visual attention metadata and base64 overlay")
 ):
     """
     Submits a crop leaf image for real-time disease diagnosis.
     Returns primary diagnosis, statistical confidence, top alternative candidates,
     symptoms, organic biocontrols, chemical fungicides, and prevention advice.
+    Optionally includes Explainable AI (Grad-CAM) focal coordinates and base64 overlay.
     """
     if MODEL_STATE["model"] is None:
         preload_model()
 
-    # Validate content type
     if not file.content_type.startswith("image/"):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -256,7 +270,6 @@ async def predict_crop_disease(
     raw_predictions = predict_top_k(MODEL_STATE["model"], pil_image, top_k=top_k)
     latency_ms = (time.perf_counter() - start_t) * 1000
 
-    # Format response
     formatted_candidates = []
     for item in raw_predictions:
         is_healthy = "healthy" in item["class_name"].lower()
@@ -271,6 +284,29 @@ async def predict_crop_disease(
 
     primary = formatted_candidates[0]
 
+    explainability_data = None
+    gradcam_b64 = None
+    focal_point = None
+
+    if include_gradcam:
+        try:
+            cam_res = explain_prediction(pil_image, class_index=primary["class_index"])
+            buffer = io.BytesIO()
+            cam_res["superimposed_image"].save(buffer, format="JPEG", quality=85)
+            gradcam_b64 = base64.b64encode(buffer.getvalue()).decode("utf-8")
+            focal_point = {
+                "x": cam_res["focal_center"][0],
+                "y": cam_res["focal_center"][1]
+            }
+            explainability_data = {
+                "focal_center": cam_res["focal_center"],
+                "focal_attention_point": focal_point,
+                "peak_activation": cam_res["peak_activation"],
+                "overlay_base64": gradcam_b64
+            }
+        except Exception as e:
+            print(f"Warning: Grad-CAM generation failed: {e}")
+
     return {
         "success": True,
         "specimen_name": file.filename,
@@ -278,14 +314,59 @@ async def predict_crop_disease(
         "latency_ms": round(latency_ms, 2),
         "timestamp": datetime.datetime.now().isoformat(),
         "primary_diagnosis": primary,
-        "top_candidates": formatted_candidates
+        "top_candidates": formatted_candidates,
+        "explainability": explainability_data,
+        "gradcam_overlay_base64": gradcam_b64,
+        "focal_attention_point": focal_point
     }
+
+
+@app.post("/predict/heatmap", tags=["Inference"])
+async def predict_and_return_heatmap_image(
+    file: UploadFile = File(..., description="Crop leaf image file (JPG, PNG, WebP)"),
+    alpha: float = Query(0.45, ge=0.1, le=0.9, description="Overlay blending weight (0.1 to 0.9)"),
+    colormap: str = Query("jet", description="Colormap for attention map ('jet', 'viridis', 'magma')")
+):
+    """
+    Submits a crop leaf image, runs disease diagnosis, and returns
+    the superimposed Grad-CAM attention heatmap directly as a JPEG image.
+    Ideal for direct <img> tags or mobile applications.
+    """
+    if MODEL_STATE["model"] is None:
+        preload_model()
+
+    if not file.content_type.startswith("image/"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Uploaded file '{file.filename}' is not an image."
+        )
+
+    try:
+        contents = await file.read()
+        pil_image = Image.open(io.BytesIO(contents)).convert("RGB")
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Failed to decode image: {str(e)}"
+        )
+
+    raw_preds = predict_top_k(MODEL_STATE["model"], pil_image, top_k=1)
+    primary_idx = raw_preds[0]["class_index"]
+
+    cam_res = explain_prediction(pil_image, class_index=primary_idx, alpha=alpha, colormap=colormap)
+
+    buffer = io.BytesIO()
+    cam_res["superimposed_image"].save(buffer, format="JPEG", quality=90)
+    image_bytes = buffer.getvalue()
+
+    return Response(content=image_bytes, media_type="image/jpeg")
 
 
 @app.post("/predict/report", tags=["Inference"])
 async def predict_and_generate_report(
     file: UploadFile = File(..., description="Crop leaf image file (JPG, PNG, WebP)"),
-    top_k: int = Query(5, ge=1, le=38, description="Number of top candidates in report")
+    top_k: int = Query(5, ge=1, le=38, description="Number of top candidates in report"),
+    include_gradcam: bool = Query(True, description="Whether to include Grad-CAM superimposed image in the report")
 ):
     """
     Submits a crop leaf image, runs disease diagnosis, and returns
@@ -313,9 +394,17 @@ async def predict_and_generate_report(
     raw_predictions = predict_top_k(MODEL_STATE["model"], pil_image, top_k=top_k)
     latency_ms = (time.perf_counter() - start_t) * 1000
 
+    report_image = pil_image
+    if include_gradcam:
+        try:
+            cam_res = explain_prediction(pil_image, class_index=raw_predictions[0]["class_index"])
+            report_image = cam_res["superimposed_image"]
+        except Exception as e:
+            print(f"Warning: Grad-CAM overlay fallback: {e}")
+
     pdf_bytes = generate_pdf_report(
         predictions=raw_predictions,
-        leaf_image=pil_image,
+        leaf_image=report_image,
         model_name=MODEL_STATE["engine_name"],
         latency_ms=latency_ms,
         specimen_name=file.filename

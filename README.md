@@ -15,6 +15,7 @@ The system analyzes crop leaf images, identifies **38 distinct crop disease & he
 
 - ⚡ **MobileNetV3 (TFLite)**: Ultra-fast, edge-optimized (~12 MB) model trained on PlantVillage achieving **~95% accuracy** with **~10–25 ms latency** for real-time edge, webcam, mobile, and Raspberry Pi diagnostics.
 - 🧠 **ResNet-50 (Keras)**: Full 50-layer deep residual network (`models/crop_disease_resnet50.h5`, ~98 MB) for deep feature extraction.
+- 🔬 **Explainable AI (Grad-CAM)**: Visual attention heatmaps and blended overlays highlighting pathological leaf lesions and symptom hotspots.
 - 🌐 **Production REST API (FastAPI)**: Real-time endpoints for mobile applications, IoT devices, and agricultural drones.
 - 🐳 **Docker & Docker Compose**: 1-command microservices containerization ready for cloud deployment.
 
@@ -75,6 +76,7 @@ Crop-Disease-Prediction/
 │   ├── __init__.py             # Package init & runtime compatibility polyfills
 │   ├── model.py                # ResNet-50 & MobileNetV3 TFLite architectures
 │   ├── disease_data.py         # 38-class metadata, symptoms, and remedies
+│   ├── explainability.py       # Grad-CAM visual attention & heatmap superimposition
 │   ├── report_generator.py     # PDF Agronomic Field Report generator (ReportLab)
 │   └── utils.py                # Preprocessing, top-k scoring & report formatting
 │
@@ -186,6 +188,9 @@ Run diagnosis directly from terminal:
 # Basic prediction with CLI summary report
 python predict.py --image_path samples/real_leaf_sample.jpg
 
+# Generate Explainable AI (Grad-CAM) visual attention overlay
+python predict.py --image_path samples/real_leaf_sample.jpg --gradcam --save_heatmap attention_overlay.jpg
+
 # Output formatted JSON (for integration with scripts or pipelines)
 python predict.py --image_path samples/sample_apple_scab.jpg --json
 
@@ -252,18 +257,48 @@ curl -X POST "http://localhost:8000/predict?top_k=3" \
 }
 ```
 
+### Predict Disease with Explainable AI Overlay (`POST /predict?include_gradcam=true`)
+```bash
+curl -X POST "http://localhost:8000/predict?top_k=3&include_gradcam=true" \
+  -H "accept: application/json" \
+  -H "Content-Type: multipart/form-data" \
+  -F "file=@samples/real_leaf_sample.jpg"
+```
+*Returns diagnosis and includes `focal_attention_point: {x, y}` and `gradcam_overlay_base64`.*
+
+### Direct Heatmap Image Endpoint (`POST /predict/heatmap`)
+```bash
+curl -X POST "http://localhost:8000/predict/heatmap?alpha=0.5&colormap=jet" \
+  -H "accept: image/jpeg" \
+  -F "file=@samples/real_leaf_sample.jpg" \
+  --output leaf_attention_heatmap.jpg
+```
+*Streams the superimposed Grad-CAM diagnostic heatmap directly as standard JPEG bytes (compatible with HTML `<img>` tags).*
+
 ### Download Diagnostic Field Report as PDF (`POST /predict/report`)
 ```bash
-curl -X POST "http://localhost:8000/predict/report" \
+curl -X POST "http://localhost:8000/predict/report?include_gradcam=true" \
   -H "accept: application/pdf" \
   -F "file=@samples/real_leaf_sample.jpg" \
   --output diagnostic_report.pdf
 ```
+*Generates an Agronomic Field Report PDF embedding both the original specimen and the superimposed Grad-CAM visual attention overlay.*
 
 ### Check System Health (`GET /health`)
 ```bash
 curl -X GET "http://localhost:8000/health"
 ```
+
+---
+
+## 🔬 Explainable AI (Grad-CAM) Visual Attention
+
+To eliminate black-box decision uncertainty in agronomy, AgriVision AI implements **Gradient-weighted Class Activation Mapping (Grad-CAM)**:
+1. **Feature Extraction**: Extracts high-level spatial feature activations from the final residual convolutional blocks of the network (`conv5_block3_out` in ResNet-50).
+2. **Gradient Backpropagation**: Calculates gradients of the predicted disease score with respect to feature maps using `tf.GradientTape()`.
+3. **Global Average Pooling**: Computes importance weights for each feature channel to quantify its diagnostic relevance.
+4. **Thermal Blending**: Upsamples normalized activations with bilinear interpolation, color-maps with JET / Viridis, and alpha-blends directly over the input leaf image.
+5. **Focal Point Localization**: Automatically calculates $(x, y)$ coordinate centroids of peak symptom concentration, pinpointing fungal leaf spots, rust pustules, or bacterial lesions for the farmer.
 
 ---
 

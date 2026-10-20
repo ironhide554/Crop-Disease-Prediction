@@ -1,0 +1,26 @@
+# Git & Development
+.git/
+.gitignore
+.github/
+.pytest_cache/
+.vscode/
+.idea/
+__pycache__/
+*.py[cod]
+*$py.class
+*.log
+
+# Python Environments
+.env
+.venv
+venv/
+env/
+
+# Datasets and Large Archive Files
+data/
+*.zip
+*.tar.gz
+*.ipynb
+
+# Heavy Model Files (keeping MobileNetV3.tflite)
+models/*.h5
